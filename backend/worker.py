@@ -1,35 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # worker.py  –  Net-Pulse Cloudflare Worker (Python)
-# Replaces app.py for Cloudflare Workers deployment.
-#
-# Cloudflare Workers limitations vs Flask:
-#   ✗  speedtest-cli      → replaced with real HTTP download/upload measurement
-#   ✗  psutil             → replaced with CF request metadata + timing
-#   ✗  flask-socketio     → replaced with polling endpoints (WS not supported)
-#   ✗  SSE streaming      → replaced with JSON endpoint + frontend polls
-#   ✓  All HTTP routes    → fully ported
-#   ✓  Geo-IP             → uses CF's built-in request.cf headers (free, accurate)
-#   ✓  Nearby servers     → uses Speedtest.net public API (no speedtest-cli needed)
-#   ✓  Haversine          → ported as-is
-#   ✓  CORS               → all responses include CORS headers
+# SDK: workers-py >= 1.90
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
 import math
 import time
 import os
+import re
 
-from js import (
-    Response,
-    Headers,
-    fetch as js_fetch,
-    Object,
-    Uint8Array,
-)
-from pyodide.ffi import to_js
+from workers import fetch as js_fetch, Response, Headers
 
 
-# ── CORS helper ───────────────────────────────────────────────────────────────
+# ── CORS ──────────────────────────────────────────────────────────────────────
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -38,22 +21,18 @@ CORS_HEADERS = {
     "Content-Type": "application/json",
 }
 
-def make_headers(extra: dict = None):
-    h = {**CORS_HEADERS, **(extra or {})}
-    return Headers.new(to_js(h))
-
 def json_response(data: dict, status: int = 200):
-    return Response.new(
+    return Response(
         json.dumps(data),
         status=status,
-        headers=make_headers()
+        headers=CORS_HEADERS
     )
 
 def error_response(msg: str, status: int = 500):
     return json_response({"error": msg}, status)
 
 
-# ── Haversine distance (km) ───────────────────────────────────────────────────
+# ── Haversine ─────────────────────────────────────────────────────────────────
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -69,21 +48,19 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ── Geo-IP via Cloudflare request metadata ────────────────────────────────────
-# CF automatically injects location data into every request at the edge.
-# This is free and accurate – no external API call needed.
 
 def get_geoip_from_cf(request):
     cf = request.cf
     try:
         ip       = request.headers.get("CF-Connecting-IP") or "N/A"
-        country  = str(cf.country)         if cf else "N/A"
-        city     = str(cf.city)            if cf else "N/A"
-        region   = str(cf.region)          if cf else "N/A"
-        timezone = str(cf.timezone)        if cf else "N/A"
-        lat      = str(cf.latitude)        if cf else "N/A"
-        lon      = str(cf.longitude)       if cf else "N/A"
-        isp      = str(cf.asOrganization)  if cf else "N/A"
-        asn      = str(cf.asn)             if cf else "N/A"
+        country  = str(cf.country)        if cf else "N/A"
+        city     = str(cf.city)           if cf else "N/A"
+        region   = str(cf.region)         if cf else "N/A"
+        timezone = str(cf.timezone)       if cf else "N/A"
+        lat      = str(cf.latitude)       if cf else "0"
+        lon      = str(cf.longitude)      if cf else "0"
+        isp      = str(cf.asOrganization) if cf else "N/A"
+        asn      = str(cf.asn)            if cf else "N/A"
         loc      = f"{lat},{lon}"
     except Exception:
         ip = city = region = country = timezone = isp = asn = "N/A"
@@ -105,16 +82,18 @@ def get_geoip_from_cf(request):
     }
 
 
-# ── Speedtest.net server list (no speedtest-cli required) ─────────────────────
+# ── Speedtest.net server list ─────────────────────────────────────────────────
 
 async def fetch_speedtest_servers(user_lat: float, user_lon: float):
-    import re
     url = "https://www.speedtest.net/speedtest-servers-static.php"
     try:
         resp = await js_fetch(
             url,
             method="GET",
-            headers=to_js({"User-Agent": "Mozilla/5.0", "Accept": "text/xml"})
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "text/xml"
+            }
         )
         if not resp.ok:
             return []
@@ -148,20 +127,22 @@ async def fetch_speedtest_servers(user_lat: float, user_lon: float):
     results.sort(key=lambda x: x["distance"])
     return results[:12]
 
+
 # ── Download test ─────────────────────────────────────────────────────────────
 
 async def handle_download_test(request):
-    size_mb = 10
-    size_bytes = size_mb * 1024 * 1024
+    size_bytes = 10 * 1024 * 1024
     payload = os.urandom(size_bytes)
-
-    dl_headers = Headers.new(to_js({
-        "Content-Type":                 "application/octet-stream",
-        "Content-Length":               str(size_bytes),
-        "Cache-Control":                "no-store",
-        "Access-Control-Allow-Origin":  "*",
-    }))
-    return Response.new(payload, status=200, headers=dl_headers)
+    return Response(
+        payload,
+        status=200,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size_bytes),
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
 
 
 # ── Upload test ───────────────────────────────────────────────────────────────
@@ -180,7 +161,7 @@ async def handle_upload_test(request):
     })
 
 
-# ── Ping test ─────────────────────────────────────────────────────────────────
+# ── Ping ──────────────────────────────────────────────────────────────────────
 
 async def handle_ping(request):
     cf = request.cf
@@ -188,7 +169,6 @@ async def handle_ping(request):
         colo = str(cf.colo) if cf else "Unknown"
     except Exception:
         colo = "Unknown"
-
     return json_response({
         "status":    "ok",
         "colo":      colo,
@@ -197,7 +177,7 @@ async def handle_ping(request):
     })
 
 
-# ── Run speed test (one-shot JSON, replaces SSE /run-speedtest) ───────────────
+# ── Full speed test (one-shot) ────────────────────────────────────────────────
 
 async def handle_run_speedtest(request, user_lat: float, user_lon: float, server_host: str = None):
     if not server_host:
@@ -208,8 +188,15 @@ async def handle_run_speedtest(request, user_lat: float, user_lon: float, server
         server_host = nearest["host"]
         server_info = nearest
     else:
-        server_info = {"host": server_host, "name": "Selected", "country": "", "sponsor": "", "distance": 0}
+        server_info = {
+            "host": server_host,
+            "name": "Selected",
+            "country": "",
+            "sponsor": "",
+            "distance": 0
+        }
 
+    # Ping (5 samples, drop first and last)
     ping_url = f"https://{server_host}/speedtest/latency.txt"
     pings = []
     for _ in range(5):
@@ -226,6 +213,7 @@ async def handle_run_speedtest(request, user_lat: float, user_lon: float, server
         math.sqrt(sum((p - ping_ms) ** 2 for p in pings) / len(pings)), 2
     )
 
+    # Download
     dl_url = f"https://{server_host}/speedtest/random4000x4000.jpg"
     t0 = time.monotonic()
     try:
@@ -237,6 +225,7 @@ async def handle_run_speedtest(request, user_lat: float, user_lon: float, server
     dl_elapsed = time.monotonic() - t0
     download_mbps = round((dl_bytes * 8) / (dl_elapsed * 1_000_000), 2) if dl_elapsed > 0 else 0
 
+    # Upload
     ul_payload = os.urandom(2 * 1024 * 1024)
     ul_url = f"https://{server_host}/speedtest/upload.php"
     t0 = time.monotonic()
@@ -254,46 +243,49 @@ async def handle_run_speedtest(request, user_lat: float, user_lon: float, server
         "jitter":   jitter_ms,
         "download": download_mbps,
         "upload":   upload_mbps,
-        "server":   f"{server_info.get('name','')}, {server_info.get('country','')}",
+        "server":   f"{server_info.get('name', '')}, {server_info.get('country', '')}",
         "sponsor":  server_info.get("sponsor", ""),
         "host":     server_host,
         "distance": server_info.get("distance", 0),
     })
 
 
-# ── Main fetch handler ────────────────────────────────────────────────────────
+# ── Main router ───────────────────────────────────────────────────────────────
 
 async def on_fetch(request, env):
-    url     = str(request.url)
-    method  = str(request.method).upper()
-    path    = "/" + "/".join(url.split("//", 1)[-1].split("/")[1:]).split("?")[0]
+    url    = str(request.url)
+    method = str(request.method).upper()
+    path   = "/" + "/".join(url.split("//", 1)[-1].split("/")[1:]).split("?")[0]
 
+    # OPTIONS preflight
     if method == "OPTIONS":
-        return Response.new("", status=204, headers=make_headers())
+        return Response("", status=204, headers=CORS_HEADERS)
 
+    # /ping
     if path in ("/ping", "/api/ping"):
         return await handle_ping(request)
 
+    # /get-ip
     if path == "/get-ip":
         ip = request.headers.get("CF-Connecting-IP") or "Unavailable"
         return json_response({"ip": ip})
 
+    # /get-geoip
     if path == "/get-geoip":
         return json_response(get_geoip_from_cf(request))
 
+    # /get-servers
     if path == "/get-servers":
-        from js import URL as JS_URL
-        js_url   = JS_URL.new(url)
-        lat_p    = js_url.searchParams.get("lat")
-        lon_p    = js_url.searchParams.get("lon")
-
-        if lat_p and lon_p:
-            try:
-                user_lat = float(lat_p)
-                user_lon = float(lon_p)
-            except ValueError:
-                return error_response("Invalid lat/lon params", 400)
-        else:
+        params = {}
+        if "?" in url:
+            for part in url.split("?", 1)[1].split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    params[k] = v
+        try:
+            user_lat = float(params.get("lat", "0"))
+            user_lon = float(params.get("lon", "0"))
+        except ValueError:
             cf = request.cf
             try:
                 user_lat = float(str(cf.latitude))
@@ -304,23 +296,32 @@ async def on_fetch(request, env):
         servers = await fetch_speedtest_servers(user_lat, user_lon)
         return json_response({"servers": servers})
 
+    # /download-test
     if path in ("/download-test", "/api/download-test"):
         return await handle_download_test(request)
 
+    # /upload-test
     if path in ("/upload-test", "/api/upload-test") and method == "POST":
         return await handle_upload_test(request)
 
+    # /run-speedtest
     if path == "/run-speedtest":
-        from js import URL as JS_URL
-        js_url      = JS_URL.new(url)
-        lat_p       = js_url.searchParams.get("lat")
-        lon_p       = js_url.searchParams.get("lon")
-        server_host = js_url.searchParams.get("server_host") or None
+        params = {}
+        if "?" in url:
+            for part in url.split("?", 1)[1].split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    params[k] = v
+
+        server_host = params.get("server_host") or None
+        if server_host:
+            from urllib.parse import unquote
+            server_host = unquote(server_host)
 
         cf = request.cf
         try:
-            user_lat = float(lat_p)  if lat_p  else float(str(cf.latitude))
-            user_lon = float(lon_p)  if lon_p  else float(str(cf.longitude))
+            user_lat = float(params["lat"]) if "lat" in params else float(str(cf.latitude))
+            user_lon = float(params["lon"]) if "lon" in params else float(str(cf.longitude))
         except Exception:
             user_lat, user_lon = 0.0, 0.0
 
