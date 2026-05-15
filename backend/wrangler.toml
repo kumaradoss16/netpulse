@@ -2,6 +2,3 @@ name = "net-pulse-api"
 main = "worker.py"
 compatibility_date = "2026-05-15"
 compatibility_flags = ["python_workers"]
-
-[build]
-command = "pip install -r requirements.txt"
