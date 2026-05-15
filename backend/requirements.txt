@@ -1,7 +1,3 @@
-flask
-flask-socketio
-eventlet
-speedtest-cli
-psutil
-certifi
-gunicorn
+# No pip packages needed for Cloudflare Workers Python runtime.
+# worker.py uses only pyodide built-ins (json, math, time, os)
+# and Cloudflare JS bindings (js.fetch, js.Response, etc.)
