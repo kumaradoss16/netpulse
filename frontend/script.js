@@ -4,7 +4,7 @@
      /get-ip, /get-geoip, /get-servers, /download-test, /upload-test, /run-speedtest
    ======================================================================== */
 
-const API_BASE = "https://net-pulse-api.Kunmaradoss.workers.dev"; // TODO: change YOURNAME
+const API_BASE = "https://net-pulse-api.kumaradoss16.workers.dev";
 
 /* ───────────────────────────── Navbar + Brand typing ───────────────────────── */
 
