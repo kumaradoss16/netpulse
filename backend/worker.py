@@ -108,38 +108,45 @@ def get_geoip_from_cf(request):
 # ── Speedtest.net server list (no speedtest-cli required) ─────────────────────
 
 async def fetch_speedtest_servers(user_lat: float, user_lon: float):
-    url = "https://www.speedtest.net/api/js/servers?engine=js&limit=100&https_functional=true"
+    import re
+    url = "https://www.speedtest.net/speedtest-servers-static.php"
     try:
-        resp = await js_fetch(url, method="GET")
+        resp = await js_fetch(
+            url,
+            method="GET",
+            headers=to_js({"User-Agent": "Mozilla/5.0", "Accept": "text/xml"})
+        )
         if not resp.ok:
             return []
         raw = await resp.text()
-        servers_raw = json.loads(raw)
+        servers_raw = []
+        for m in re.finditer(r"<Server\s([^/]+)/>", raw):
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+            servers_raw.append(attrs)
     except Exception as e:
-        return [{"error": f"Failed to fetch server list: {e}"}]
+        return [{"error": str(e)}]
 
     results = []
     for s in servers_raw:
         try:
-            slat = float(str(s.get("lat", "0")).strip())
-            slon = float(str(s.get("lon", "0")).strip())
+            slat = float(s.get("lat", "0"))
+            slon = float(s.get("lon", "0"))
             dist = haversine(user_lat, user_lon, slat, slon)
         except Exception:
             dist = 9999
         results.append({
-            "id":       str(s.get("id", "")).strip(),
-            "name":     str(s.get("name", "")).strip(),
-            "country":  str(s.get("country", "")).strip(),
-            "sponsor":  str(s.get("sponsor", "")).strip(),
-            "host":     str(s.get("host", "")).strip(),
-            "lat":      str(s.get("lat", "")).strip(),
-            "lon":      str(s.get("lon", "")).strip(),
+            "id":       s.get("id", ""),
+            "name":     s.get("name", ""),
+            "country":  s.get("country", ""),
+            "sponsor":  s.get("sponsor", ""),
+            "host":     s.get("host", ""),
+            "lat":      s.get("lat", ""),
+            "lon":      s.get("lon", ""),
             "distance": round(dist, 1),
         })
 
     results.sort(key=lambda x: x["distance"])
     return results[:12]
-
 
 # ── Download test ─────────────────────────────────────────────────────────────
 
