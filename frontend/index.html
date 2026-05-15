@@ -10,7 +10,7 @@
     <script src="https://cdn.jsdelivr.net/npm/socket.io@4.7.2/dist/socket.io.min.js"></script>
     <!-- Local CSS using Flask url_for -->
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="../static/style.css">
+    <link rel="stylesheet" href="style.css">
     <!-- CORRECT -->
     <!-- Favicon — double quotes outside, single inside Jinja2 -->
     <link rel="icon" href="{{ url_for('static', filename='icon.webp') }}?v=1" type="image/webp">
@@ -438,7 +438,7 @@
     </footer>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
-    <script src="../static/script.js"></script>
+    <script src="script.js"></script>
 </body>
 
 </html>
